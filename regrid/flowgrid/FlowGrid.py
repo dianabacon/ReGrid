@@ -3,6 +3,8 @@ import numpy as np
 from datetime import *
 import getpass
 import string
+import copy
+import math
 
 from mpl_toolkits.mplot3d import axes3d
 from matplotlib.ticker import MaxNLocator
@@ -10,7 +12,6 @@ import matplotlib.pyplot as plt
 
 from pyevtk.hl import pointsToVTK
 import vtk
-from vtk.util.numpy_support import numpy_to_vtk
 
 # import pkg_resources  # part of setuptools
 # version = pkg_resources.require("ReGrid")[0].version
@@ -22,9 +23,20 @@ class FlowGrid(object):
     def __init__(self):
         self.skip = 0
         self.Prop = {}
+        self.outputDir = 'output'
 
     def __getitem__(self, key):
         return getattr(self, key)
+
+    def setOutputDir(self, dir):
+        self.outputDir = dir
+
+    # Checks if path outputDir/dirName exists, creates if not
+    def checkOutputDir(self, subDir):
+        if not os.path.exists(self.outputDir):
+            os.mkdir(self.outputDir)
+        if not os.path.exists(self.outputDir + '/' + subDir):
+            os.mkdir(self.outputDir + '/' + subDir)
 
     def exportVTK(self, fname):
         """ Saves the SUTRA grid as a VTK file, either a VTKStructuredGrid (.vts)
@@ -314,10 +326,28 @@ class GRDECL(FlowGrid):
             self.coords = []
             for line in fp:
                 if line.split()[-1] != "/":
-                    self.coords += line.split()
+                    item = line.split()
+                    for c in item:
+                        if '*' in c:
+                            cc = c.split('*')
+                            for i in range(int(cc[0])):
+                                self.coords.append(cc[-1])
+                        else:
+                            self.coords.append(c)
                 else:
-                    self.coords += line.split()[0:-1]
-                    break
+                    if len(line.split()) > 1:
+                        item = line.split()
+                        for i in range(len(item) - 1):
+                            cc = item[i]
+                            if '*' in cc:
+                                ccc = cc.split('*')
+                                for j in range(int(ccc[0])):
+                                    self.coords.append(ccc[-1])
+                            else:
+                                self.coords.append(c)
+                        break
+                    else:
+                        break
 
             # Read in ZCORN
             self.zcorn = []
@@ -345,7 +375,13 @@ class GRDECL(FlowGrid):
                         for line in fp:
                             if line.split():
                                 if line.split()[-1] != "/":
-                                    self.active += line.split()
+                                    c = line.split()
+                                    if '*' in c:
+                                        cc = c.split('*')
+                                        for i in range(float(cc[0])):
+                                            self.active += cc[-1]
+                                    else:
+                                        self.active += c
                                 else:
                                     self.active += line.split()[0:-1]
                                     break
@@ -360,37 +396,37 @@ class GRDECL(FlowGrid):
 
         # build grid
         self.buildGrid(plot=False)
-        # self.buildActiveCells(plot=False)
-        # self.buildZGrid(plot=False)
+        self.buildActiveCells(plot=False)
+        self.buildZGrid(plot=False)
         # self.calculateVolumes(plot=False)
         #
-        # # Convert to VTK
-        # self.GridType = "vtkStructuredGrid"
-        # self.Grid = vtk.vtkStructuredGrid()
-        # self.Grid.SetDimensions(self.ne+1, self.nn+1, self.nz+1)
-        # vtk_points = vtk.vtkPoints()
-        # ve = 1.
-        #
-        # for iz in range(self.nz):
-        #     if iz == 0:
-        #         for iy in range(self.nn+1):
-        #             for ix in range(self.ne+1):
-        #                 vtk_points.InsertNextPoint( self.X0[ix,iy], \
-        #                                             self.Y0[ix,iy], \
-        #                                        ve * self.ZZT[iz][ix,iy] )
-        #     for iy in range(self.nn+1):
-        #         for ix in range(self.ne+1):
-        #             vtk_points.InsertNextPoint( self.X0[ix,iy], \
-        #                                         self.Y0[ix,iy], \
-        #                                    ve * self.ZZB[iz][ix,iy] )
-        # self.Grid.SetPoints(vtk_points)
-        #
-        # # Add in active cells
-        # ac = vtk.vtkIntArray()
-        # ac.SetName( "ActiveCells" )
-        # for iac in self.ActiveCells.flatten( order='F' ):
-        #     ac.InsertNextTuple1( iac )
-        # self.Grid.GetCellData().AddArray(ac)
+        # Convert to VTK
+        self.GridType = "vtkStructuredGrid"
+        self.Grid = vtk.vtkStructuredGrid()
+        self.Grid.SetDimensions(self.ne+1, self.nn+1, self.nz+1)
+        vtk_points = vtk.vtkPoints()
+        ve = 1.
+
+        for iz in range(self.nz):
+            if iz == 0:
+                for iy in range(self.nn+1):
+                    for ix in range(self.ne+1):
+                        vtk_points.InsertNextPoint( self.X0[ix,iy], \
+                                                    self.Y0[ix,iy], \
+                                               ve * self.ZZT[iz][ix,iy] )
+            for iy in range(self.nn+1):
+                for ix in range(self.ne+1):
+                    vtk_points.InsertNextPoint( self.X0[ix,iy], \
+                                                self.Y0[ix,iy], \
+                                           ve * self.ZZB[iz][ix,iy] )
+        self.Grid.SetPoints(vtk_points)
+
+        # Add in active cells
+        ac = vtk.vtkIntArray()
+        ac.SetName( "ActiveCells" )
+        for iac in self.ActiveCells.flatten( order='F' ):
+            ac.InsertNextTuple1( iac )
+        self.Grid.GetCellData().AddArray(ac)
 
     def buildGrid(self, plot=False):
         """
@@ -425,14 +461,14 @@ class GRDECL(FlowGrid):
         print('points e')
         print(self.points["e"])
 
-        # # Here are the coordinates
-        # self.X0 = np.reshape(self.points["e"][0::2] , (self.ndx,self.ndy), order="F")
-        # self.Y0 = np.reshape(self.points["n"][0::2] , (self.ndx,self.ndy), order="F")
-        # self.Z0 = np.reshape(self.points["z"][0::2] , (self.ndx,self.ndy), order="F")
-        #
-        # self.X1 = np.reshape(self.points["e"][1::2] , (self.ndx,self.ndy), order="F")
-        # self.Y1 = np.reshape(self.points["n"][1::2] , (self.ndx,self.ndy), order="F")
-        # self.Z1 = np.reshape(self.points["z"][1::2] , (self.ndx,self.ndy), order="F")
+        # Here are the coordinates
+        self.X0 = np.reshape(self.points["e"][0::2] , (self.ndx,self.ndy), order="F")
+        self.Y0 = np.reshape(self.points["n"][0::2] , (self.ndx,self.ndy), order="F")
+        self.Z0 = np.reshape(self.points["z"][0::2] , (self.ndx,self.ndy), order="F")
+
+        self.X1 = np.reshape(self.points["e"][1::2] , (self.ndx,self.ndy), order="F")
+        self.Y1 = np.reshape(self.points["n"][1::2] , (self.ndx,self.ndy), order="F")
+        self.Z1 = np.reshape(self.points["z"][1::2] , (self.ndx,self.ndy), order="F")
         #
         # # visualize
         # if plot:
@@ -625,8 +661,7 @@ class GRDECL(FlowGrid):
         print("Total grid volume: " + str(np.sum(self.Volumes)) + " m^3")
 
     def readProperty(self, fname, attr_name):
-        """ Reads a single property from a file, for time series or multiple properties
-            you need to build on this
+        """ Reads a single property from a file
         """
         temp = []
         with open(fname, "r") as fp:
@@ -642,10 +677,22 @@ class GRDECL(FlowGrid):
                 if attribute:
                     if attribute[0] != "--":
                         if attribute[-1] != "/":
-                            temp += attribute
+                            for c in attribute:
+                                if '*' in c:
+                                    cc = c.split('*')
+                                    for i in range(int(cc[0])):
+                                        temp.append(cc[-1])
+                                else:
+                                    temp.append(c)
                         else:
                             attribute.pop()
-                            temp += attribute
+                            for c in attribute:
+                                if '*' in c:
+                                    cc = c.split('*')
+                                    for i in range(int(cc[0])):
+                                        temp.append(cc[-1])
+                                else:
+                                    temp.append(c)
                             break
 
                         # #attribute = fp.readline().split()[-1]
@@ -683,6 +730,162 @@ class GRDECL(FlowGrid):
         for iac in data.flatten(order='F'):
             ac.InsertNextTuple1(iac)
         self.Grid.GetCellData().AddArray(ac)
+
+        return data
+
+    def readOutputProperty(self, fname, prop_strings, toVTK=True, toNumpy=True):
+        """
+        Reads per-cell properties from .PRT file for all timesteps
+
+        Pack property keywords to read from .PRT into list of lists
+        This saves significant time for large grids as only one pass is required through .PRT file
+        Inner lists should contain keywords that enable line denoting property section to be uniquely identified
+
+        :param prop_strings: [[ECL prop keyword, subkey1, subkey2, ...], ...]
+
+        Order props as they appear in .PRT file
+        """
+        print('Reading output properties\n')
+        prop = {}
+        prop_idx = 0
+        for p in prop_strings:
+            prop[p[0]] = {}
+        with open(fname, "r") as fp:
+            t = 0
+            II = []
+            build = False
+            data = np.zeros(self.ne * self.nn * self.nz)
+            for line in fp:
+                # Find prop keywords
+                if not build:
+                    if all(e in line for e in prop_strings[prop_idx]):
+                        data = np.zeros(self.ne * self.nn * self.nz)
+                        # print('Reading output property: ' + prop_strings[prop_idx][0])
+                        # print('t = ' + str(t))
+                        build = True
+                # Read prop data
+                else:
+                    item = line.split()
+                    if len(item) > 0:
+                        if 'I=' in line:
+                            II = line.split('I=')[1].split()
+                            II = list(map(int, II))
+                        elif '(*,' in item[0]:
+                            idxs = line.split('(')[1].split(')')[0].replace(',', ' ').split()
+                            J = int(idxs[1])
+                            K = int(idxs[2])
+                            vals = line.split(')')[1].split()
+                            for c,I in enumerate(II):
+                                if '-' in vals[c]:
+                                    vals[c] = 0
+                                idx = ((self.ne * self.nn) * (K - 1)) + (self.ne * (J - 1)) + (I - 1)
+                                data[idx] = vals[c]
+                        elif '--' in item[0]:
+                            build = False
+                            pname = prop_strings[prop_idx][0]
+                            prop[pname] = copy.deepcopy(data)
+                            if prop_idx < len(prop_strings) - 1:
+                                prop_idx += 1
+                            # All properties for current t have been read
+                            else:
+                                print('Exporting grid for t = ' + str(t))
+                                ids = []
+                                for pn in prop.keys():
+                                    data = prop[pn]
+                                    if toNumpy:
+                                        if t == 0:
+                                            self.checkOutputDir(pn)
+                                        grid_data = np.reshape(data, (self.ne, self.nn, self.nz), order="F")
+                                        np.save(self.outputDir + '/' + pn + '/' + pn + '_' + str(t), grid_data)
+                                    if toVTK:
+                                        if t == 0:
+                                            self.checkOutputDir('vtk')
+                                        ac = vtk.vtkDoubleArray()
+                                        ac.SetName(pn)
+                                        for iac in data:
+                                            ac.InsertNextTuple1(iac)
+                                        id = self.Grid.GetCellData().AddArray(ac)
+                                        ids.append(id)
+                                if toVTK:
+                                    self.exportVTK(self.outputDir + '/vtk/' + fname.split('/')[-1].split('.')[0] + '_' + str(t))
+                                    for id in ids:
+                                        self.Grid.GetCellData().RemoveArray(id)
+                                prop_idx = 0
+                                t += 1
+
+    def readWellOutput(self, fname, keys):
+        wellOutput = {}
+        keyOrder = {}
+        readNames = False
+        build = False
+        skip = 0
+
+        for key in keys:
+            wellOutput[key] = {}
+
+        with open(fname, "r") as fp:
+            for line in fp:
+                item = line.split()
+                if len(item) > 0:
+
+                    # read time series values
+                    if build:
+                        # I don't know why '1' denotes timestep end in .RSM file
+                        if item[0] == '1':
+                            build = False
+                            continue
+                        t = item[0]
+                        for idx in keyOrder.keys():
+                            if t in wellOutput[keyOrder[idx][0]]:
+                                wellOutput[keyOrder[idx][0]][t][keyOrder[idx][1]] = float(item[idx])
+                            else:
+                                if len(keyOrder[idx]) > 1:
+                                    wellOutput[keyOrder[idx][0]][t] = {}
+                                    wellOutput[keyOrder[idx][0]][t][keyOrder[idx][1]] = float(item[idx])
+                                else:
+                                    wellOutput[keyOrder[idx][0]][t] = float(item[idx])
+                        continue
+
+                    # get names of wells
+                    if readNames:
+                        for idx in keyOrder.keys():
+                            curr = keyOrder[idx]
+                            if keyOrder[idx][0][0] == 'W':
+                                keyOrder[idx].append(item[idx - skip])
+                        next(fp)
+                        next(fp)
+                        readNames = False
+                        build = True
+                        skip = 0
+                        continue
+
+                    # find line that contains keys
+                    if item[0] == 'TIME':
+                        keyOrder = {}
+                        # if time found, then keys might be on this same line
+                        for j,key in enumerate(keys):
+                            for i,var in enumerate(item):
+                                if key == var:
+                                    if i in keyOrder:
+                                        keyOrder[i].append(key)
+                                    else:
+                                        keyOrder[i] = [key]
+                                if j == 0 and var[0] != 'W':
+                                    # then it is time related or a field variable
+                                    skip += 1
+                        if len(keyOrder.keys()) > 0:
+                            next(fp)
+                            readNames = True
+        return wellOutput
+
+    # Exports Numpy array of property (can be wells)
+    # TODO: inherit from FlowGrid
+    def exportProp(self, title, prop):
+        if not os.path.exists(self.outputDir):
+            os.mkdir(self.outputDir)
+        np.save(self.outputDir + '/' + title, prop)
+
+
 
 
 class SUTRA(FlowGrid):
@@ -821,35 +1024,48 @@ class SUTRA(FlowGrid):
 class CMG(FlowGrid):
     def __init__(self):
         super(CMG, self).__init__()
-        nx, ny, nz = 0, 0, 0
+        self.outputDir = 'output'
 
-    # Builds a corner point grid from a  CMG formatted input file (.dat)
+    def setOutputDir(self, dir):
+        self.outputDir = dir
+
+    # Get xyz coords of corner points defining cell
+    def getCellCoords(self, cellIdxs):
+        coordList = []
+        xyz = [0, 0, 0]
+        cell = self.Grid.GetCell(cellIdxs[0], cellIdxs[1], cellIdxs[2])
+        pointIds = cell.GetPointIds()
+        numIds = pointIds.GetNumberOfIds()
+        for n in range(numIds):
+            p = pointIds.GetId(n)
+            self.Grid.GetPoint(p, xyz)
+            coordList.append(copy.deepcopy(xyz))
+        return coordList
+
+    # Compute center of cell given corner point coords
+    def centroid(self, coords):
+        return np.mean(coords, axis=0)
+
+    # Builds a corner point grid from a CMG formatted input file (.dat)
     # CMG output files (.out) do not always contain complete CP grid information
     def buildCorner(self, fname):
+        print('Building corner point grid')
         self.iWidths = []
         self.jWidths = []
-        with open(fname, "r") as fp:
 
-            # TODO: the way that keywords are read in currently depends on their
-            # TODO: ordering in the input file - look for ** keyword to denote section ends?
-            # Read header
-            for line in fp:
-                item = line.split()
-                if len(item) > 0:
-                    # Searches for line of format *GRID *CORNER I J K
-                    if item[0] == "GRID" or item[0] == "*GRID":
-                        self.gridType = item[1]
-                        # i,j,k
-                        self.size = np.array(item[2:5], dtype=int)
-                        break
-
-            # We assume that DI comes before DJ in CMG file
-            # Read DI
+        # Reads DI or DJ, where dir is 'I' or 'J'
+        def readBlockSizes(dir):
             count = 0
+            if dir == "I":
+                widths = self.iWidths
+                nb = 0
+            else:
+                widths = self.jWidths
+                nb = 1
             for line in fp:
                 item = line.split()
-                if item[0] == "DI" or item[0] == "*DI":
-                    if item[1] == "IVAR" or item[1] == "*IVAR":
+                if item[0] == "D" + dir or item[0] == "*D" + dir:
+                    if item[1] == dir + "VAR" or item[1] == dir + "*VAR":
                         self.iWidths += item[2:]
                         count += len(item) - 2
                         break
@@ -862,43 +1078,28 @@ class CMG(FlowGrid):
                     if "*" in zz:
                         item = zz.split("*")
                         for i in range(0, int(item[0])):
-                            self.iWidths.append(item[1])
+                            widths.append(item[1])
                             count += 1
                     else:
-                        self.iWidths.append(zz)
+                        widths.append(zz)
                         count += 1
                 # If true, all attributes have been read
-                if count == self.size[0]:
+                if count == self.size[nb]:
                     break
 
-            # Read DJ
-            count = 0
+        with open(fname, "r") as fp:
+            # Read header
             for line in fp:
                 item = line.split()
-                if item[0] == "DJ" or item[0] == "*DJ":
-                    if item[1] == "JVAR" or item[1] == "*JVAR":
-                        self.jWidths += item[2:]
-                        count += len(item) - 2
+                if len(item) > 0:
+                    # Searches for line of format *GRID *CORNER I J K
+                    if item[0] == "GRID" or item[0] == "*GRID":
+                        self.gridType = item[1]
+                        self.size = np.array(item[2:5], dtype=int)
                         break
-                    elif item[1] == "CON":
-                        pass
-            for line in fp:
-                item = line.split()
-                for zz in item:
-                    if "*" in zz:
-                        item = zz.split("*")
-                        for i in range(0, int(item[0])):
-                            self.jWidths.append(item[1])
-                            count += 1
-                    else:
-                        self.jWidths.append(zz)
-                        count += 1
-                # If true, all attributes have been read
-                if count == self.size[1]:
-                    break
-
-            def readDK():
-                pass
+            # Read DI, DJ
+            readBlockSizes('I')
+            readBlockSizes('J')
 
             for line in fp:
                 item = line.split()
@@ -933,6 +1134,7 @@ class CMG(FlowGrid):
 
     # Builds a cartesian grid from a CMG output file (.out)
     def buildCart(self, fname):
+        print('Building cartesian grid')
         self.iWidths = []
         self.jWidths = []
         with open(fname, "r") as fp:
@@ -1041,7 +1243,6 @@ class CMG(FlowGrid):
                     writeCorners()
 
         # Write z-coordinates from ZCORN
-        # TODO: make this consistent with Trevor's style of doing these operations
         for line in fp:
             item = line.split()
             if item[0][0] != "*":
@@ -1068,7 +1269,6 @@ class CMG(FlowGrid):
             else:
                 const += self.size[0] * self.size[1] * 8
 
-        # vtk_points = pointsToVTK("./SACROC_CMG_VTK", Xtemp, Ytemp, Ztemp, data={"test": dat})
         vtk_points = vtk.vtkPoints()
         for point in range(len(XX)):
             vtk_points.InsertNextPoint(XX[point], YY[point], ZZ[point])
@@ -1093,9 +1293,7 @@ class CMG(FlowGrid):
         self.ActiveCells = np.array(self.ActiveCells)
         self.ActiveCells = np.reshape(self.ActiveCells, (self.size[0], self.size[1], self.size[2]), order="F")
 
-    # 'stop' refers to the CMG keyword that signals the end
-    #  of the desired attribute property section
-    # 'stop' is required if 'ALL' keyword is present
+    # Reads property attr_name from .dat file
     def readProperty(self, fname, attr_name, add=True):
         typeVal = None
         val = 0
@@ -1152,6 +1350,29 @@ class CMG(FlowGrid):
             self.addToGrid(data, attr_name)
         return data
 
+    # Reads prop from external file denoted by INCLUDE in .dat
+    def readExternalProperty(self, fname, attr_title, mult=1):
+        data = []
+        count = 0
+        with open(fname, "r") as fp:
+            for line in fp:
+                item = line.split()
+                for attr in item:
+                    if "*" in attr:
+                        item = attr.split("*")
+                        for i in range(0, int(item[0])):
+                            data.append(float(item[1]) * mult)
+                            count += 1
+                    else:
+                        data.append(float(attr) * mult)
+                        count += 1
+                # If true, all values have been read
+                if count == self.size[0] * self.size[1] * self.size[2]:
+                    data = np.array(data)
+                    data = np.reshape(data, (self.size[0], self.size[1], self.size[2]), order="F")
+                    break
+        self.addToGrid(data, attr_title)
+
     # Add data to VTK grid
     def addToGrid(self, data, attr_name):
         ac = vtk.vtkDoubleArray()
@@ -1175,133 +1396,355 @@ class CMG(FlowGrid):
     # -attr_name is the desired attribute as it appears in the .out file
     # -If a cell property is empty, then this will set it to null
     # -attr_title is how the attr will appear in the vts file
-    def readOutputProperty(self, fname, attr_name, attr_title):
+    def readOutputProperty(self, fname, outputProps):
         # Set up dictionary for attr_name
         # Doing so will allow us to read attr_name values for every time step
-        attr_name = attr_name.replace(" ", "").strip()
-        setattr(self, attr_name, {})
-        # self[attr_name] = {}
-        layers = {}
-        propIndices = []
-        I, J, K = (None,) * 3
-        time = None
-        build = False
+        self.outputProps = {}
+        for prop in outputProps:
+            attr_name = prop[0].replace(" ", "").strip()
+            attr_title = prop[1]
+            # setattr(self, attr_title, {})
+            self.outputProps[attr_title] = {}
+            if not hasattr(self, 'times'):
+                self.times = []
+            layers = {}
+            propIdxs = []
+            I, J, K = (None,) * 3
+            time = None
+            build = False
+            buildTimes = True
 
-        with open(fname, "r") as fp:
-            for line in fp:
-                item = line.split()
-                if len(item) > 0:
-                    # Find current time step
-                    if item[0] == 'Time':
-                        time = item[2]
-                    attr = line.replace(" ", "").strip()
-                    # Locate attribute name
-                    if attr == attr_name:
-                        build = True
-                        layers = {}
-                        propIndices = []
-                        I = None
-                        J = None
-                        K = '1'
-
-                    if build:
-                        if item[0] == 'All':
-                            kKeys = np.arange(self.size[2])
-                            grid = dict((el, {}) for el in kKeys)
-                            for k in range(self.size[2]):
-                                kLayer = self.buildConstLayer(item[3])
-                                grid[k] = kLayer
-                            self[attr_name][time] = grid
-                            build = False
-                            continue
-
-                        if item[0] == 'Plane':
-                            K = item[3]
-                            if len(item) > 4:
-                                if item[4] == 'All':
-                                    kLayer = self.buildConstLayer(item[7])
-                                    layers[K] = kLayer
-                            else:
-                                I = None
-                                layers[K] = {}
-
-                        if item[0] == 'I':
-                            if K == '1' and I is None:
-                                layers[K] = {}
+            with open(fname, "r") as fp:
+                for line in fp:
+                    item = line.split()
+                    if len(item) > 0:
+                        # Find current time step
+                        if item[0] == 'Time':
+                            time = item[2]
+                        attr = line.replace(" ", "").strip()
+                        # Locate attribute name
+                        if attr == attr_name:
+                            build = True
+                            layers = {}
+                            propIdxs = []
+                            I = None
                             J = None
-                            propIndices = []
-                            I = item[2:]
-                            prevDigit = False
-                            for i in range(len(line)):
-                                if line[i].isdigit():
-                                    if not prevDigit:
-                                        propIndices.append(i)
-                                        prevDigit = True
+                            K = '1'
+
+                        if build:
+                            if item[0] == 'All':
+                                kKeys = np.arange(self.size[2])
+                                grid = dict((el, {}) for el in kKeys)
+                                for k in range(self.size[2]):
+                                    kLayer = self.buildConstLayer(item[3])
+                                    grid[k] = kLayer
+                                self.outputProps[attr_title][time] = grid
+                                build = False
+                                continue
+
+                            if item[0] == 'Plane':
+                                K = item[3]
+                                if len(item) > 4:
+                                    if item[4] == 'All':
+                                        kLayer = self.buildConstLayer(item[7])
+                                        layers[K] = kLayer
                                 else:
-                                    prevDigit = False
+                                    I = None
+                                    layers[K] = {}
 
-                        # Check if there are any missing values in J line
-                        skipItem = []
-                        if item[0] == 'J=':
-                            JIndex = item[1]
-                            J = item[2:]
+                            if item[0] == 'I':
+                                if K == '1' and I is None:
+                                    layers[K] = {}
+                                J = None
+                                propIdxs = []
+                                I = item[2:]
+                                prevDigit = False
+                                for i in range(len(line)):
+                                    if line[i].isdigit():
+                                        if not prevDigit:
+                                            propIdxs.append(i)
+                                            prevDigit = True
+                                    else:
+                                        prevDigit = False
 
-                            if JIndex not in layers[K].keys():
-                                layers[K][JIndex] = []
+                            # Check if there are any missing values in J line
+                            skipItem = []
+                            if item[0] == 'J=':
+                                JIdx = item[1]
+                                J = item[2:]
+                                if JIdx not in layers[K].keys():
+                                    layers[K][JIdx] = []
+                                for i in range(len(propIdxs)):
+                                    if line[propIdxs[i]] == ' ':
+                                        skipItem.append(i)
+                                numSkips = 0
+                                for i in range(len(I)):
+                                    if i in skipItem:
+                                        layers[K][JIdx].append('NULL')
+                                        numSkips += 1
+                                    else:
+                                        layers[K][JIdx].append(J[i - numSkips])
 
-                            for i in range(len(propIndices)):
-                                if line[propIndices[i]] == ' ':
-                                    skipItem.append(i)
+                            # Put entire grid worth of property in dictionary for current time step
+                            if I and J:
+                                if int(I[-1]) == self.size[0] and int(JIdx) == self.size[1] and int(K) == self.size[2]:
+                                    if build:
+                                        self.outputProps[attr_title][time] = layers
+                                        layers = {}
+                                        build = False
+                # Convert layers from dictionary to arrays
+                timeSeriesData = {}
+                if len(self.times) > 0:
+                    buildTimes = False
+                for t in self.outputProps[attr_title].keys():
+                    if buildTimes:
+                        self.times.append(t)
+                    timeSeriesData[t] = []
+                    for j in self.outputProps[attr_title][t].keys():
+                        for k in self.outputProps[attr_title][t][j].keys():
+                            timeSeriesData[t] += self.outputProps[attr_title][t][j][k]
+                self.outputProps[attr_title] = timeSeriesData
 
-                            numSkips = 0
-                            for i in range(len(I)):
-                                if i in skipItem:
-                                    layers[K][JIndex].append('NULL')
-                                    numSkips += 1
-                                else:
-                                    layers[K][JIndex].append(J[i - numSkips])
+    # Build and export VTK grids and output prop arrays for every timestep
+    def exportGrid(self, fname_vtk, toVTK=True, toNumpy=True):
+        print('Exporting grids')
+        tID = 0
+        for t in self.times:
+            propIds = []
+            for prop in self.outputProps.keys():
+                data = np.array(self.outputProps[prop][t])
+                # Save to numpy
+                if toNumpy:
+                    self.exportProp(data, prop, tID)
+                # Save to VTK
+                if toVTK:
+                    ac = vtk.vtkDoubleArray()
+                    ac.SetName(prop)
 
-                        # Put entire grid worth of property in dictionary for current time step
-                        if I and J:
-                            if int(I[-1]) == self.size[0] and int(JIndex) == self.size[1] and int(K) == self.size[2]:
-                                if build:
-                                    self[attr_name][time] = layers
-                                    layers = {}
-                                    build = False
+                    def isfloat(value):
+                        try:
+                            float(value)
+                            return True
+                        except ValueError:
+                            return False
 
-            # Convert layers from dictionary to arrays
-            timeSeriesData = {}
-            for time in self[attr_name].keys():
-                timeSeriesData[time] = []
-                for k in self[attr_name][time].keys():
-                    for j in self[attr_name][time][k].keys():
-                        timeSeriesData[time] += self[attr_name][time][k][j]
-            setattr(self, attr_name, timeSeriesData)
-
-            # Add to VTK grid
-            n = 1
-            for key in self[attr_name].keys():
-                data = np.array(self[attr_name][key])
-                # data = np.reshape(data, (self.size[0], self.size[1], self.size[2]), order="F")
-
-                ac = vtk.vtkDoubleArray()
-                ac.SetName(attr_title + '[' + key + ']')
-
-                def isfloat(value):
-                    try:
-                        float(value)
-                        return True
-                    except ValueError:
-                        return False
-
-                for iac in data:
-                    if not iac[0].isdigit():
-                        iac = 0
-                    else:
-                        if isfloat(iac):
-                            iac = float(iac)
-                        else:
+                    idx = 0
+                    for iac in data:
+                        # po
+                        if not iac[0].isdigit():
                             iac = 0
+                        else:
+                            if isfloat(iac):
+                                iac = float(iac)
+                            else:
+                                iac = 0
+                        idx += 1
+                        ac.InsertNextTuple1(iac)
+                    id = self.Grid.GetCellData().AddArray(ac)
+                    propIds.append(id)
 
-                    ac.InsertNextTuple1(iac)
-                self.Grid.GetCellData().AddArray(ac)
+            if tID == 0:
+                self.checkOutputDir('vtk')
+            self.exportVTK(self.outputDir + '/vtk/' + fname_vtk + str(tID))
+            for id in propIds:
+                self.Grid.GetCellData().RemoveArray(id)
+            tID += 1
+
+    # Given an array of well dictionaries, this creates well data layers and adds to grid
+    def addWellLayers(self, wells):
+        # Fetch all well constraint types for injectors and producers
+        # Create data layers for each type
+        all_wells = np.zeros(self.size[0] * self.size[1] * self.size[2])
+        well_data_layers = {'ALL': all_wells, 'INJ': {}, 'PRO': {}}
+        for well in wells:
+            i = 0
+            loc = well['LOC']
+            idx = ((self.size[0] * self.size[1]) * (loc[2] - 1)) + (self.size[0] * (loc[1] - 1)) + (loc[0] - 1)
+            if well['TYPE'] == 'INJ':
+                for con_type in well['CON_TYPE']:
+                    if con_type not in well_data_layers['INJ'].keys():
+                        well_data_layers['INJ'][con_type] = np.zeros(self.size[0] * self.size[1] * self.size[2])
+                    else:
+                        well_data_layers['INJ'][con_type][idx] = well['CON_VAL'][i]
+                    i += 1
+                well_data_layers['ALL'][idx] = 1
+            else:
+                for con_type in well['CON_TYPE']:
+                    if con_type not in well_data_layers['PRO'].keys():
+                        well_data_layers['PRO'][con_type] = np.zeros(self.size[0] * self.size[1] * self.size[2])
+                    i += 1
+                well_data_layers['ALL'][idx] = -1
+
+        # Add data layers to grid
+        data_layer = well_data_layers['ALL']
+        self.addToGrid(data_layer, 'WELLS ALL')
+        for con_type in well_data_layers['INJ'].keys():
+            data_layer = well_data_layers['INJ'][con_type]
+            self.addToGrid(data_layer, 'WELLS INJ ' + con_type)
+        for con_type in well_data_layers['PRO'].keys():
+            data_layer = well_data_layers['PRO'][con_type]
+            self.addToGrid(data_layer, 'WELLS PRO ' + con_type)
+
+    # Contains useful methods for working with wells
+    class Wells:
+        def __init__(self, wells, times, outputDir):
+            self.wells = wells
+            self.times = times
+            self.outputDir = outputDir
+
+        # Return list of well names
+        def names(self):
+            return [well['NAME'] for well in self.wells]
+
+        # Get a single well by name
+        def well(self, name):
+            for well in self.wells:
+                if well['NAME'] == name:
+                    return well
+            raise KeyError('Well name not recognized')
+
+        # Builds a dictionary of wells and their associated properties
+        def getWells(self, fname):
+            getLoc = False
+            wells = []
+            well = {'NAME': None, 'TYPE': None, 'OP_MODE': [], 'CON_TYPE': [], 'CON_VAL': [], 'LOC': None}
+            with open(fname, "r") as fp:
+                for line in fp:
+                    item = line.split()
+                    if len(item) > 0:
+                        keyword = item[0]
+                        if getLoc:
+                            if item[0][0] == '*':
+                                continue
+                            well['LOC'] = (int(item[0]), int(item[1]), int(item[2]))
+                            getLoc = False
+                        elif keyword == 'WELL':
+                            # Add the previous well to the grid
+                            if well['NAME'] is not None:
+                                wells.append(copy.deepcopy(well))
+                                well = {'NAME': None, 'TYPE': None, 'OP_MODE': [], 'CON_TYPE': [], 'CON_VAL': [],
+                                        'LOC': None}
+                            well['NAME'] = item[1].strip("'")
+                        elif keyword == 'INJECTOR':
+                            well['TYPE'] = 'INJ'
+                        elif keyword == 'PRODUCER':
+                            well['TYPE'] = 'PRO'
+                        elif keyword == 'OPERATE':
+                            well['OP_MODE'].append(item[1])
+                            well['CON_TYPE'].append(item[2])
+                            well['CON_VAL'].append(item[3])
+                        elif keyword == 'PERF':
+                            getLoc = True
+                wells.append(well)
+            return self.Wells(wells, self.times, self.outputDir)
+
+        # Helper fn for readOutput
+        # In GEMFIELDSUMMARY blocks, not all wells may be listed
+        # This finds which ones are and returns an ordered list of their names
+        def getOutputOrdering(self, fname):
+            t = 1
+            orderDict = {}
+            order = []
+            readWells = False
+            lastBlock = False
+            addOrder = False
+            with open(fname, "r") as fp:
+                for line in fp:
+                    if readWells:
+                        if lastBlock:
+                            line = line.split('++')[0]
+                            addOrder = True
+                            lastBlock = False
+                        item = list(map(str.strip, line.split('+')))
+                        item = [e.split() for e in list(filter(None, item))]
+                        order.extend([w[1] for w in item])
+                        readWells = False
+                        if addOrder:
+                            orderDict[t] = order
+                            order = []
+                            addOrder = False
+                            t += 1
+                    elif len(line.split()) > 0:
+                        if 'No.' and 'Name' in line:
+                            if '++' in line:
+                                lastBlock = True
+                            readWells = True
+                            next(fp)
+                            continue
+            return orderDict
+
+        # Reads well information for all timesteps from .out
+        def readOutput(self, fname, keys, subkeys):
+            k = 0
+            sk = 0
+            tID = 0
+            build_keys = False
+            build_subkeys = False
+            cur_key = None
+            cur_block = 1
+            n_blocks = 0
+            order = self.getOutputOrdering(fname)
+            # Initialize output dictionary
+            wellOutput = {}
+            for i,key in enumerate(keys):
+                wellOutput[key] = {}
+                for subkey in subkeys[i]:
+                    wellOutput[key][subkey] = {}
+                    for t in range(len(self.times) - 1):
+                        wellOutput[key][subkey][t+1] = []
+            with open(fname, "r") as fp:
+                for line in fp:
+                    item = line.split()
+                    if len(item) > 0:
+                        # Find current time step
+                        if item[0] == 'TIME:':
+                            head = ''.join(item[2:])
+                            if 'GEMFIELDSUMMARY' in head:
+                                build_keys = True
+                                tID += 1
+                                n_wells = len(order[tID])
+                                n_blocks = math.ceil(n_wells / 4)
+                                continue
+                        # Assume that keywords are ordered as they appear in .out
+                        if build_keys:
+                            # Current block has been read, move to next one
+                            if k == len(keys):
+                                cur_block += 1
+                                k = 0
+                            if keys[k] in line:
+                                cur_key = keys[k]
+                                build_keys = False
+                                build_subkeys = True
+                                continue
+                        elif build_subkeys:
+                            if sk == len(subkeys[k]):
+                                build_subkeys = False
+                                build_keys = True
+                                k += 1
+                                sk = 0
+                                continue
+                            for subkey in subkeys[k]:
+                                if subkey in line:
+                                    if cur_block == n_blocks:
+                                        line = line.split('++')[0]
+                                    item = list(map(str.strip, line.split('+')))
+                                    item = list(filter(None, item))
+                                    wellOutput[cur_key][subkey][tID].extend(item[1:])
+                                    sk += 1
+            # Attach well names to well outputs
+            for key in wellOutput:
+                for subkey in wellOutput[key]:
+                    for t in range(1, len(self.times)):
+                        wellOutput[key][subkey][t] = {k:v for k,v in zip(order[t], wellOutput[key][subkey][t])}
+            return wellOutput
+
+    # Exports Numpy array of grid property
+    def exportProp(self, prop, title, tID):
+        data = np.reshape(prop, (self.size[0], self.size[1], self.size[2]))
+        self.checkOutputDir(title)
+        np.save(self.outputDir + '/' + title + '/' + title + '_' + str(tID), data)
+
+    # Exports Numpy array of well dictionaries
+    def exportWells(self, title, wells):
+        self.checkOutputDir(title)
+        np.save(self.outputDir + '/' + title, wells)
