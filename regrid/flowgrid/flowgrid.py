@@ -838,7 +838,7 @@ class GRDECL(FlowGrid):
                                         if t == 0:
                                             self._check_out(pn)
                                         grid_data = np.reshape(data, (self.ne, self.nn, self.nz), order="F")
-                                        np.save(os.path.join(self.out_dir, pn, pn + '_' + str(t)), grid_data)
+                                        np.savez_compressed(os.path.join(self.out_dir, pn, pn + '_' + str(t)), grid_data)
                                     if toVTK:
                                         if t == 0:
                                             self._check_out('vtk')
@@ -925,7 +925,7 @@ class GRDECL(FlowGrid):
     def export_prop(self, title, prop):
         if not os.path.exists(self.out_dir):
             os.mkdir(self.out_dir)
-        np.save(os.path.join(self.out_dir, title), prop)
+        np.savez_compressed(os.path.join(self.out_dir, title), prop)
 
 
 class SUTRA(FlowGrid):
@@ -1162,23 +1162,28 @@ class CMG(FlowGrid):
             k_spacing = 0
             # Assumes DEPTH is the final keyword describing grid structure (move 'break' if not)
             for line in fp:
-                item = line.split()
-                # Read DI
-                if item[0] == "DI" or item[0] == "*DI":
-                    if item[1] == "CON" or item[1] == "*CON":
-                        self.X = np.arange(0, float(item[2]) * (self.size[0] + 1), float(item[2]))
-                # Read DJ
-                elif item[0] == "DJ" or item[0] == "*DJ":
-                    if item[1] == "CON" or item[1] == "*CON":
-                        self.Y = np.arange(0, float(item[2]) * (self.size[1] + 1), float(item[2]))
-                # Read DK
-                elif item[0] == "DK" or item[0] == "*DK":
-                    if item[1] == "CON" or item[1] == "*CON":
+                item = [ i.strip('*') for i in line.split() ]
+                # Read Z-axis orientation
+                if item[0] == "KDIR" and item[1] == "DOWN": # K=1 is top layer
+                    kdir = 1
+                elif item[0] == "KDIR" and item[1] == "UP": # K=1 is bottom layer
+                    kdir = -1
+                # Read X-axis spacing
+                elif item[0] == "DI":
+                    if item[1] == "CON":
+                        self.X = np.linspace(0, float(item[2]) * self.size[0], self.size[0]+1)
+                # Read Y-axis spacing
+                elif item[0] == "DJ":
+                    if item[1] == "CON":
+                        self.Y = np.linspace(0, float(item[2]) * (self.size[1]), self.size[1]+1)
+                # Read Z-axis spacing
+                elif item[0] == "DK":
+                    if item[1] == "CON":
                         k_spacing = float(item[2])
                 # Read DEPTH (assumes of form *DEPTH *TOP I J K depth)
-                elif item[0] == "DEPTH" or item[0] == "*DEPTH":
+                elif item[0] == "DEPTH":
                     depth = float(item[5])
-                    self.Z = np.arange(depth, depth - (k_spacing * self.size[2]), -k_spacing)
+                    self.Z = np.linspace(depth, depth + (k_spacing * kdir * float(self.size[2])), self.size[2]+1)
                     break
 
         # Write cell vertex coordinates
@@ -1188,7 +1193,7 @@ class CMG(FlowGrid):
                 XX.extend(self.X)
                 YY.extend([self.Y[j]] * (self.size[0] + 1))
             ZZ.extend([self.Z[k]] * (self.size[0] + 1) * (self.size[1] + 1))
-        self.structured_grid(X, Y, Z)
+        self.structured_grid(XX, YY, ZZ)
 
     def read_CORNERS(self, fp):
         """
@@ -1607,7 +1612,7 @@ class CMG(FlowGrid):
     def read_ext_prop(self, fname, prop_title, mult=1):
         """
         Reads a property from an external file denoted by INCLUDE in .DAT
-        Assumes that only data is contained in file (no keywords!)
+        Skips keywords at top of file, handles *MOD keyword at end of file
 
         Parameters
         ----------
@@ -1628,9 +1633,22 @@ class CMG(FlowGrid):
         print('Reading ' + prop_title + ' input')
         data = []
         count = 0
+        modify = False
         with open(fname, "r") as fp:
             for line in fp:
+                if not line[:1].isdigit():
+                    if line.startswith('*MOD'):
+                        modify = True
+                    continue # it's a keyword
                 item = line.split()
+                if modify:
+                    i = int(item[0])-1
+                    j = int(item[1])-1
+                    K = [int(x)for x in item[2].split(':')]
+                    value = float(item[-1])
+                    for k in range(K[0]-1,K[1]):
+                        data[k,j,i] = value
+                    break
                 for attr in item:
                     if "*" in attr:
                         item = attr.split("*")
@@ -1643,9 +1661,8 @@ class CMG(FlowGrid):
                 # If true, all values have been read
                 if count == self.size[0] * self.size[1] * self.size[2]:
                     data = np.array(data)
-                    # data = np.reshape(data, (self.size[0], self.size[1], self.size[2]), order="C")
                     data = np.reshape(data, (self.size[2], self.size[1], self.size[0]), order="C")
-                    break
+                    continue
         self.add_data(data, prop_title)
         self.out_props[prop_title] = data
 
@@ -2039,11 +2056,15 @@ class CMG(FlowGrid):
             for line in fp:
                 item = line.split()
                 if len(item) > 0:
-                    keyword = item[0]
+                    keyword = item[0].strip('*')
                     if getLoc:
-                        if item[0][0] == '*':
+                        if item[0][0] == '*' and item[0][1] == '*':
                             continue
-                        well['LOC'] = (int(item[0]), int(item[1]), int(item[2]))
+                        if ':' in item[2]:
+                            K = [int(x)for x in item[2].split(':')]
+                            well['LOC'] = (int(item[0]), int(item[1]), int(K[-1]))
+                        else:
+                            well['LOC'] = (int(item[0]), int(item[1]), int(item[2]))
                         getLoc = False
                     elif keyword == 'WELL':
                         # Add the previous well to the grid
@@ -2057,9 +2078,9 @@ class CMG(FlowGrid):
                     elif keyword == 'PRODUCER':
                         well['TYPE'] = 'PRO'
                     elif keyword == 'OPERATE':
-                        well['OP_MODE'].append(item[1])
-                        well['CON_TYPE'].append(item[2])
-                        well['CON_VAL'].append(item[3])
+                        well['OP_MODE'].append(item[1].strip('*'))
+                        well['CON_TYPE'].append(item[2].strip('*'))
+                        well['CON_VAL'].append(item[3].strip('*'))
                     elif keyword == 'PERF':
                         getLoc = True
             wells.append(well)
@@ -2436,7 +2457,7 @@ class CMG(FlowGrid):
 
         """
         self._check_out(title)
-        np.save(os.path.join(self.out_dir, title, title + '_' + str(t)), d)
+        np.savez_compressed(os.path.join(self.out_dir, title, title + '_' + str(t)), d)
 
     def export_wells(self, w, title):
         """
@@ -2452,7 +2473,7 @@ class CMG(FlowGrid):
             Name for the data
         """
         self._check_out(title)
-        np.save(os.path.join(self.out_dir, title), w)
+        np.savez_compressed(os.path.join(self.out_dir, title, title), w)
 
 # TODO: under development
 class DynamicGrid:
